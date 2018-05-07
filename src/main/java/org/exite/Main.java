@@ -16,6 +16,8 @@ import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.nio.file.Files;
 import java.nio.file.Paths;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.Base64;
 import java.util.UUID;
 
@@ -26,8 +28,6 @@ public class Main {
 
     static int counter;
     static int threadsCount;
-
-    static byte[]body;
 
     static IRestExAPI rest = new RestExAPI();
     static String authToken;
@@ -46,10 +46,9 @@ public class Main {
 
             this.authToken = rest.authorize(login, pass);
             cryptex = new CryptEx(null);
-            this.body = Files.readAllBytes(Paths.get(srcFilePath));
 
             for(int i=0;i<threadsCount;i++){
-                new Thread(new Generator(rest, i)).start();
+                new Thread(new Generator(Files.readAllBytes(Paths.get(srcFilePath)), rest, i), "Thr-"+i).start();
             }
         } catch (Exception e){
             log.error(e);
@@ -67,16 +66,23 @@ public class Main {
         String cryptexAlias = args[5];
         new Main(login, pass, counter, threadsCount, filePath, cryptexAlias);
     }
+
+    public static synchronized byte[] getSign(final byte[] body) throws Exception {
+        return cryptex.signCAdES(body, cryptexAlias, ESignType.DER);
+    }
 }
 
 class Generator implements Runnable {
 
     private static final Logger log = Logger.getLogger(Generator.class);
 
+    private byte[] body;
+
     IRestExAPI rest;
     int curThread;
 
-    public Generator(IRestExAPI rest, int curThread) {
+    public Generator(byte[] body, IRestExAPI rest, int curThread) {
+        this.body = body;
         this.rest = rest;
         this.curThread = curThread;
     }
@@ -96,12 +102,13 @@ class Generator implements Runnable {
 
     private void generateTest(int counter) throws Exception {
         try{
-            byte[] body = modifyBody(counter);
-            byte[] sign = getSign(body);
+            final byte[] body = modifyBody(this.body, counter);
+            final byte[] sign = Main.getSign(body);
             final String stringBody = Base64.getEncoder().encodeToString(body);
             final String stringSign = Base64.getEncoder().encodeToString(sign);
             final String filename = getFileName(body);
             int code = rest.sendDocument(Main.authToken, stringBody, stringSign, DocumentType.ON_SCHFDOPPR);
+            /*int code = 200;*/
             log.info("Sent to api " + filename + " with http code " + code);
         } catch (Exception e){
             e.printStackTrace();
@@ -109,18 +116,16 @@ class Generator implements Runnable {
         }
     }
 
-    private byte[] modifyBody(int counter) throws Exception {
+    private synchronized byte[] modifyBody(byte[] body, int counter) throws Exception {
         /*
         *
         * */
         SAXBuilder builder = new SAXBuilder();
-        Document doc = builder.build(new ByteArrayInputStream(Main.body));
+        Document doc = builder.build(new ByteArrayInputStream(body));
         Attribute id=doc.getRootElement().getAttribute("ИдФайл");
-        id.setValue(
-                id.getValue().replace(id.getValue().split("_")[5], UUID.randomUUID().toString())
-        );
+        id.setValue(id.getValue().replace(id.getValue().split("_")[5], UUID.randomUUID().toString()));
         Attribute num = doc.getRootElement().getChild("Документ").getChild("СвСчФакт").getAttribute("НомерСчФ");
-        num.setValue(num.getValue()+"-"+counter);
+        num.setValue(LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyMMdd_HHmmss_SSS"))+"-"+counter);
         XMLOutputter out =new XMLOutputter();
         out.setFormat(Format.getPrettyFormat().setEncoding("windows-1251"));
         ByteArrayOutputStream baos=new ByteArrayOutputStream();
@@ -135,10 +140,4 @@ class Generator implements Runnable {
         Document doc = builder.build(new ByteArrayInputStream(body));
         return doc.getRootElement().getAttribute("ИдФайл").getValue();
     }
-
-
-    private byte[] getSign(final byte[] body) throws Exception {
-        return Main.cryptex.signCAdES(body, Main.cryptexAlias, ESignType.DER);
-    }
-
 }
